@@ -1,5 +1,5 @@
 ---
-page_title: "Authenticating with Ped Store"
+page_title: "Authenticating with REDHAT IDM"
 ---
 
 ```

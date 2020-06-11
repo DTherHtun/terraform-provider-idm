@@ -18,7 +18,7 @@ terraform {
   required_providers {
     idm = {
       source = "DTherHtun/idm"
-      version = "0.0.1"
+      version = "0.0.2"
     }
   }
 }
