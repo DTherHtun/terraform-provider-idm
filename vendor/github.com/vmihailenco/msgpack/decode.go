@@ -12,6 +12,8 @@ import (
 	"github.com/vmihailenco/msgpack/codes"
 )
 
+const bytesAllocLimit = 1024 * 1024 // 1mb
+
 type bufReader interface {
 	io.Reader
 	io.ByteScanner
@@ -24,10 +26,14 @@ func newBufReader(r io.Reader) bufReader {
 	return bufio.NewReader(r)
 }
 
+func makeBuffer() []byte {
+	return make([]byte, 0, 64)
+}
+
 // Unmarshal decodes the MessagePack-encoded data and stores the result
 // in the value pointed to by v.
-func Unmarshal(data []byte, v interface{}) error {
-	return NewDecoder(bytes.NewReader(data)).Decode(v)
+func Unmarshal(data []byte, v ...interface{}) error {
+	return NewDecoder(bytes.NewReader(data)).Decode(v...)
 }
 
 type Decoder struct {
@@ -50,7 +56,11 @@ type Decoder struct {
 // beyond the MessagePack values requested. Buffering can be disabled
 // by passing a reader that implements io.ByteScanner interface.
 func NewDecoder(r io.Reader) *Decoder {
-	d := new(Decoder)
+	d := &Decoder{
+		decodeMapFunc: decodeMap,
+
+		buf: makeBuffer(),
+	}
 	d.resetReader(r)
 	return d
 }
@@ -61,9 +71,8 @@ func (d *Decoder) SetDecodeMapFunc(fn func(*Decoder) (interface{}, error)) {
 
 // UseDecodeInterfaceLoose causes decoder to use DecodeInterfaceLoose
 // to decode msgpack value into Go interface{}.
-func (d *Decoder) UseDecodeInterfaceLoose(flag bool) *Decoder {
+func (d *Decoder) UseDecodeInterfaceLoose(flag bool) {
 	d.useLoose = flag
-	return d
 }
 
 // UseJSONTag causes the Decoder to use json struct tag as fallback option
@@ -84,10 +93,18 @@ func (d *Decoder) resetReader(r io.Reader) {
 	d.s = reader
 }
 
-//nolint:gocyclo
-func (d *Decoder) Decode(v interface{}) error {
+func (d *Decoder) Decode(v ...interface{}) error {
+	for _, vv := range v {
+		if err := d.decode(vv); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *Decoder) decode(dst interface{}) error {
 	var err error
-	switch v := v.(type) {
+	switch v := dst.(type) {
 	case *string:
 		if v != nil {
 			*v, err = d.DecodeString()
@@ -181,30 +198,21 @@ func (d *Decoder) Decode(v interface{}) error {
 		}
 	}
 
-	vv := reflect.ValueOf(v)
-	if !vv.IsValid() {
+	v := reflect.ValueOf(dst)
+	if !v.IsValid() {
 		return errors.New("msgpack: Decode(nil)")
 	}
-	if vv.Kind() != reflect.Ptr {
-		return fmt.Errorf("msgpack: Decode(nonsettable %T)", v)
+	if v.Kind() != reflect.Ptr {
+		return fmt.Errorf("msgpack: Decode(nonsettable %T)", dst)
 	}
-	vv = vv.Elem()
-	if !vv.IsValid() {
-		return fmt.Errorf("msgpack: Decode(nonsettable %T)", v)
+	v = v.Elem()
+	if !v.IsValid() {
+		return fmt.Errorf("msgpack: Decode(nonsettable %T)", dst)
 	}
-	return d.DecodeValue(vv)
+	return d.DecodeValue(v)
 }
 
-func (d *Decoder) DecodeMulti(v ...interface{}) error {
-	for _, vv := range v {
-		if err := d.Decode(vv); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (d *Decoder) decodeInterfaceCond() (interface{}, error) {
+func (d *Decoder) decodeInterface() (interface{}, error) {
 	if d.useLoose {
 		return d.DecodeInterfaceLoose()
 	}
@@ -281,10 +289,7 @@ func (d *Decoder) DecodeInterface() (interface{}, error) {
 		return int8(c), nil
 	}
 	if codes.IsFixedMap(c) {
-		err = d.s.UnreadByte()
-		if err != nil {
-			return nil, err
-		}
+		_ = d.s.UnreadByte()
 		return d.DecodeMap()
 	}
 	if codes.IsFixedArray(c) {
@@ -326,10 +331,7 @@ func (d *Decoder) DecodeInterface() (interface{}, error) {
 	case codes.Array16, codes.Array32:
 		return d.decodeSlice(c)
 	case codes.Map16, codes.Map32:
-		err = d.s.UnreadByte()
-		if err != nil {
-			return nil, err
-		}
+		d.s.UnreadByte()
 		return d.DecodeMap()
 	case codes.FixExt1, codes.FixExt2, codes.FixExt4, codes.FixExt8, codes.FixExt16,
 		codes.Ext8, codes.Ext16, codes.Ext32:
@@ -353,10 +355,7 @@ func (d *Decoder) DecodeInterfaceLoose() (interface{}, error) {
 		return int64(c), nil
 	}
 	if codes.IsFixedMap(c) {
-		err = d.s.UnreadByte()
-		if err != nil {
-			return nil, err
-		}
+		d.s.UnreadByte()
 		return d.DecodeMap()
 	}
 	if codes.IsFixedArray(c) {
@@ -384,10 +383,7 @@ func (d *Decoder) DecodeInterfaceLoose() (interface{}, error) {
 	case codes.Array16, codes.Array32:
 		return d.decodeSlice(c)
 	case codes.Map16, codes.Map32:
-		err = d.s.UnreadByte()
-		if err != nil {
-			return nil, err
-		}
+		d.s.UnreadByte()
 		return d.DecodeMap()
 	case codes.FixExt1, codes.FixExt2, codes.FixExt4, codes.FixExt8, codes.FixExt16,
 		codes.Ext8, codes.Ext16, codes.Ext32:
@@ -406,14 +402,11 @@ func (d *Decoder) Skip() error {
 
 	if codes.IsFixedNum(c) {
 		return nil
-	}
-	if codes.IsFixedMap(c) {
+	} else if codes.IsFixedMap(c) {
 		return d.skipMap(c)
-	}
-	if codes.IsFixedArray(c) {
+	} else if codes.IsFixedArray(c) {
 		return d.skipSlice(c)
-	}
-	if codes.IsFixedString(c) {
+	} else if codes.IsFixedString(c) {
 		return d.skipBytes(c)
 	}
 
@@ -489,26 +482,20 @@ func (d *Decoder) readN(n int) ([]byte, error) {
 	}
 	d.buf = buf
 	if d.rec != nil {
-		//TODO: read directly into d.rec?
 		d.rec = append(d.rec, buf...)
 	}
 	return buf, nil
 }
 
 func readN(r io.Reader, b []byte, n int) ([]byte, error) {
-	const bytesAllocLimit = 1024 * 1024 // 1mb
-
 	if b == nil {
 		if n == 0 {
 			return make([]byte, 0), nil
 		}
-		switch {
-		case n < 64:
-			b = make([]byte, 0, 64)
-		case n <= bytesAllocLimit:
-			b = make([]byte, 0, n)
-		default:
-			b = make([]byte, 0, bytesAllocLimit)
+		if n <= bytesAllocLimit {
+			b = make([]byte, n)
+		} else {
+			b = make([]byte, bytesAllocLimit)
 		}
 	}
 
@@ -541,7 +528,7 @@ func readN(r io.Reader, b []byte, n int) ([]byte, error) {
 	return b, nil
 }
 
-func min(a, b int) int { //nolint:unparam
+func min(a, b int) int {
 	if a <= b {
 		return a
 	}

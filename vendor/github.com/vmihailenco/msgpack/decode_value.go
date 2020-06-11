@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+
+	"github.com/vmihailenco/msgpack/codes"
 )
 
 var interfaceType = reflect.TypeOf((*interface{})(nil)).Elem()
@@ -11,7 +13,6 @@ var stringType = reflect.TypeOf((*string)(nil)).Elem()
 
 var valueDecoders []decoderFunc
 
-//nolint:gochecknoinits
 func init() {
 	valueDecoders = []decoderFunc{
 		reflect.Bool:          decodeBoolValue,
@@ -50,16 +51,11 @@ func mustSet(v reflect.Value) error {
 }
 
 func getDecoder(typ reflect.Type) decoderFunc {
-	if v, ok := typeDecMap.Load(typ); ok {
-		return v.(decoderFunc)
-	}
-	fn := _getDecoder(typ)
-	typeDecMap.Store(typ, fn)
-	return fn
-}
-
-func _getDecoder(typ reflect.Type) decoderFunc {
 	kind := typ.Kind()
+
+	if decoder, ok := typDecMap[typ]; ok {
+		return decoder
+	}
 
 	if typ.Implements(customDecoderType) {
 		return decodeCustomValue
@@ -84,10 +80,12 @@ func _getDecoder(typ reflect.Type) decoderFunc {
 		return ptrDecoderFunc(typ)
 	case reflect.Slice:
 		elem := typ.Elem()
-		if elem.Kind() == reflect.Uint8 {
+		switch elem.Kind() {
+		case reflect.Uint8:
 			return decodeBytesValue
 		}
-		if elem == stringType {
+		switch elem {
+		case stringType:
 			return decodeStringSliceValue
 		}
 	case reflect.Array:
@@ -114,9 +112,7 @@ func ptrDecoderFunc(typ reflect.Type) decoderFunc {
 			if err := mustSet(v); err != nil {
 				return err
 			}
-			if !v.IsNil() {
-				v.Set(reflect.Zero(v.Type()))
-			}
+			v.Set(reflect.Zero(v.Type()))
 			return d.DecodeNil()
 		}
 		if v.IsNil() {
@@ -137,7 +133,36 @@ func decodeCustomValueAddr(d *Decoder, v reflect.Value) error {
 }
 
 func decodeCustomValue(d *Decoder, v reflect.Value) error {
-	if d.hasNilCode() {
+	c, err := d.PeekCode()
+	if err != nil {
+		return err
+	}
+
+	if codes.IsExt(c) {
+		c, err = d.readCode()
+		if err != nil {
+			return err
+		}
+
+		extLen, err := d.parseExtLen(c)
+		if err != nil {
+			return err
+		}
+
+		_, err = d.readCode()
+		if err != nil {
+			return err
+		}
+
+		c, err = d.PeekCode()
+		if err != nil {
+			return err
+		}
+
+		d.extLen = extLen
+	}
+
+	if c == codes.Nil {
 		return d.decodeNilValue(v)
 	}
 
@@ -157,31 +182,59 @@ func unmarshalValueAddr(d *Decoder, v reflect.Value) error {
 }
 
 func unmarshalValue(d *Decoder, v reflect.Value) error {
-	if d.extLen == 0 || d.extLen == 1 {
-		if d.hasNilCode() {
-			return d.decodeNilValue(v)
+	c, err := d.PeekCode()
+	if err != nil {
+		return err
+	}
+
+	extLen := d.extLen
+	d.extLen = 0
+
+	if extLen == 0 && codes.IsExt(c) {
+		c, err = d.readCode()
+		if err != nil {
+			return err
 		}
+
+		extLen, err = d.parseExtLen(c)
+		if err != nil {
+			return err
+		}
+
+		_, err = d.readCode()
+		if err != nil {
+			return err
+		}
+
+		c, err = d.PeekCode()
+		if err != nil {
+			return err
+		}
+	}
+
+	if c == codes.Nil {
+		return d.decodeNilValue(v)
 	}
 
 	if v.IsNil() {
 		v.Set(reflect.New(v.Type().Elem()))
 	}
 
-	if d.extLen != 0 {
-		b, err := d.readN(d.extLen)
+	if extLen != 0 {
+		b, err := d.readN(extLen)
 		if err != nil {
 			return err
 		}
 		d.rec = b
 	} else {
-		d.rec = make([]byte, 0, 64)
+		d.rec = makeBuffer()
 		if err := d.Skip(); err != nil {
 			return err
 		}
 	}
 
 	unmarshaler := v.Interface().(Unmarshaler)
-	err := unmarshaler.UnmarshalMsgpack(d.rec)
+	err = unmarshaler.UnmarshalMsgpack(d.rec)
 	d.rec = nil
 	return err
 }
@@ -215,7 +268,7 @@ func decodeInterfaceValue(d *Decoder, v reflect.Value) error {
 }
 
 func (d *Decoder) interfaceValue(v reflect.Value) error {
-	vv, err := d.decodeInterfaceCond()
+	vv, err := d.decodeInterface()
 	if err != nil {
 		return err
 	}

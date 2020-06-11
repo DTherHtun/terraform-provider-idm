@@ -6,8 +6,6 @@ import (
 	"github.com/vmihailenco/msgpack/codes"
 )
 
-var sliceStringType = reflect.TypeOf(([]string)(nil))
-
 func encodeStringValue(e *Encoder, v reflect.Value) error {
 	return e.EncodeString(v.String())
 }
@@ -42,10 +40,10 @@ func grow(b []byte, n int) []byte {
 
 func (e *Encoder) EncodeBytesLen(l int) error {
 	if l < 256 {
-		return e.write1(codes.Bin8, uint8(l))
+		return e.write1(codes.Bin8, uint64(l))
 	}
 	if l < 65536 {
-		return e.write2(codes.Bin16, uint16(l))
+		return e.write2(codes.Bin16, uint64(l))
 	}
 	return e.write4(codes.Bin32, uint32(l))
 }
@@ -55,10 +53,10 @@ func (e *Encoder) encodeStrLen(l int) error {
 		return e.writeCode(codes.FixedStrLow | codes.Code(l))
 	}
 	if l < 256 {
-		return e.write1(codes.Str8, uint8(l))
+		return e.write1(codes.Str8, uint64(l))
 	}
 	if l < 65536 {
-		return e.write2(codes.Str16, uint16(l))
+		return e.write2(codes.Str16, uint64(l))
 	}
 	return e.write4(codes.Str32, uint32(l))
 }
@@ -85,14 +83,9 @@ func (e *Encoder) EncodeArrayLen(l int) error {
 		return e.writeCode(codes.FixedArrayLow | codes.Code(l))
 	}
 	if l < 65536 {
-		return e.write2(codes.Array16, uint16(l))
+		return e.write2(codes.Array16, uint64(l))
 	}
 	return e.write4(codes.Array32, uint32(l))
-}
-
-func encodeStringSliceValue(e *Encoder, v reflect.Value) error {
-	ss := v.Convert(sliceStringType).Interface().([]string)
-	return e.encodeStringSlice(ss)
 }
 
 func (e *Encoder) encodeStringSlice(s []string) error {
