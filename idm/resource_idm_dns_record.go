@@ -41,7 +41,7 @@ func resourceIDMDNSRecord() *schema.Resource {
 				Required: true,
 				// Set:      schema.HashString,
 			},
-			"dnsttl": {
+			"ttl": {
 				Type:     schema.TypeInt,
 				Optional: true,
 			},
@@ -85,7 +85,7 @@ func resourceIDMDNSRecordCreate(d *schema.ResourceData, meta interface{}) error 
 		optArgs.Srvrecord = &records
 	}
 
-	if _dnsttl, ok := d.GetOkExists("dnsttl"); ok {
+	if _dnsttl, ok := d.GetOkExists("ttl"); ok {
 		dnsttl := _dnsttl.(int)
 		optArgs.Dnsttl = &dnsttl
 	}
@@ -136,7 +136,7 @@ func resourceIDMDNSRecordUpdate(d *schema.ResourceData, meta interface{}) error 
 		optArgs.Srvrecord = &records
 	}
 
-	if _dnsttl, ok := d.GetOkExists("dnsttl"); ok {
+	if _dnsttl, ok := d.GetOkExists("ttl"); ok {
 		dnsttl := _dnsttl.(int)
 		optArgs.Dnsttl = &dnsttl
 	}
@@ -187,7 +187,7 @@ func resourceIDMDNSRecordRead(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	if res.Result.Dnsttl != nil {
-		d.Set("dnsttl", *res.Result.Dnsttl)
+		d.Set("ttl", *res.Result.Dnsttl)
 	}
 
 	if res.Result.Dnsclass != nil {
